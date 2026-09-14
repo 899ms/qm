@@ -1521,7 +1521,8 @@ a.chat-row-open {
   text-align: center;
 }
 @container chat (min-width: 471px) {
-  .custom-chat-shell.empty-chat .composer-wrap {
+  .custom-chat-shell.empty-chat .composer-wrap,
+  .custom-chat-shell.empty-chat .suggested-activities {
     width: min(calc(var(--content-w) * 0.75), 75%);
     margin-inline: auto;
   }
@@ -2492,6 +2493,99 @@ a.chat-row-open {
   position: relative;
   z-index: 4;
   min-width: 0;
+}
+.suggested-activities {
+  display: grid;
+  grid-template-rows: 1fr;
+  width: min(var(--content-w), calc(100% - 32px));
+  margin: 0 auto 10px;
+  padding: 0 2px;
+  opacity: 1;
+  visibility: visible;
+  transition:
+    grid-template-rows 220ms ease,
+    margin-bottom 220ms ease,
+    opacity 160ms ease,
+    visibility 0s;
+}
+.suggested-activities-list {
+  min-height: 0;
+  overflow: hidden;
+}
+.suggested-activities.is-collapsed {
+  grid-template-rows: 0fr;
+  margin-bottom: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    grid-template-rows 220ms ease,
+    margin-bottom 220ms ease,
+    opacity 140ms ease,
+    visibility 0s 220ms;
+}
+.empty-chat:has(.suggested-activities) .chat-cta {
+  transform: translateY(8px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .suggested-activities,
+  .suggested-activities.is-collapsed {
+    transition: none;
+  }
+}
+.suggested-activity {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted-foreground);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.suggested-activity:hover {
+  background: var(--muted);
+}
+.suggested-activity:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+}
+.suggested-activity-title {
+  font-size: 14px;
+  line-height: 1.4;
+  letter-spacing: -0.1px;
+  overflow-wrap: anywhere;
+}
+.dark .suggested-activity-title {
+  color: rgb(94 112 130);
+}
+.suggested-activity-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  font:
+    17px/1 "Apple Color Emoji",
+    "Segoe UI Emoji",
+    "Noto Color Emoji",
+    sans-serif;
+}
+@media (pointer: coarse) {
+  .suggested-activity {
+    min-height: 44px;
+  }
+}
+@media (max-width: 860px) {
+  .suggested-activities {
+    padding: 0 2px;
+    margin-bottom: 12px;
+  }
 }
 .custom-chat-shell:has(> .chat-scroll):not(.empty-chat) > .chat-bottom-dock {
   margin-top: -16px;
@@ -11273,4 +11367,17 @@ h3.ambient-field-label {
   .effort-confetti {
     display: none;
   }
+}
+
+.suggested-activity-yc {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  background: #ff6600;
+  color: white;
+  font:
+    14px/1 Arial,
+    sans-serif;
 }

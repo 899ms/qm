@@ -1,3 +1,4 @@
+import { loadGeneratedActivities } from "./generated-activities";
 import { playgroundPath, playgroundsIn, type PlaygroundArtifact } from "./playground";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { Attachment } from "@earendil-works/pi-web-ui";
@@ -143,6 +144,7 @@ import { workSeconds, workedLabel } from "./work-duration";
 import { decorateTextCodeBlocks, normalizePlainTextFences } from "./text-code";
 
 import { createTranscriptViewport } from "./transcript-viewport";
+import { suggestedActivities } from "./suggested-activities";
 
 installMarkdownSanitizer();
 
@@ -492,6 +494,12 @@ export function createChatSurface(
     container.replaceChildren(chatState.host);
     const opening = startProactiveOpenerIfNew(agent, threadRef, normalStreamFn, onWork, sessionId, scopeId, messages);
     drawActiveChat(agent, { forceScroll: true });
+    const me = appState.me;
+    if (!sessionId && me && (scopeId === null || scopeId === `personal:${me.user}`)) {
+      void loadGeneratedActivities(me, () => {
+        if (appState.me === me && chatState.agent === agent && !chatState.sessionId) drawActiveChat(agent);
+      });
+    }
     ctx.composer.focusComposerEnd();
     ctx.ensureDeliveryStream();
     if (!opening) void resumeTrackedRun(agent, threadRef, normalStreamFn, onWork);
@@ -507,6 +515,7 @@ export function createChatSurface(
     scopeId: string | null,
     messages: ReturnType<typeof entriesToMessages>,
   ): boolean {
+    if (appState.me?.suggestedActivitiesGeneration || appState.me?.suggestedActivities?.length) return false;
     if (proactiveOpenerStarted || sessionId !== null || scopeId !== null || messages.length > 0) return false;
     if (!sessionsState.loaded) return false;
     if (sessionsState.list.some((s) => s.id)) return false;
@@ -1323,6 +1332,24 @@ export function createChatSurface(
             </div>
           </section>
           <div class="chat-bottom-dock">
+            ${
+              emptyChat &&
+              !glanceTier &&
+              (!ctx.pane || tier === "full") &&
+              !chatState.sessionId &&
+              (chatState.scopeId === null || chatState.scopeId === `personal:${appState.me?.user}`) &&
+              !agent.state.isStreaming
+                ? suggestedActivities(
+                    appState.me?.suggestedActivities,
+                    (activity) => ctx.composer.fillSuggestedPrompt(activity.prompt, agent),
+                    Boolean(
+                      ctx.composer.state.draft ||
+                      ctx.composer.state.attachments.length ||
+                      ctx.composer.state.processingFiles,
+                    ),
+                  )
+                : nothing
+            }
             ${goalStrip(agent)} ${ctx.composer.queuedStrip(agent)}
             ${ctx.composer.composerForm(agent, html`${glanceTier ? nothing : liveWorkStatus(agent)} ${backgroundActivityStrip()}`)}
           </div>
