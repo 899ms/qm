@@ -2061,7 +2061,7 @@ const apiRoutes: readonly WebRoute[] = [
       const threadRef =
         typeof record.request?.conversation?.threadRef === "string" ? record.request.conversation.threadRef : "";
       const actor = typeof record.request?.actor?.externalId === "string" ? record.request.actor.externalId : "";
-      if (!threadRef.startsWith("web:") || actor !== user || !record.request) {
+      if ((!threadRef.startsWith("web:") && !threadRef.startsWith("swarm:")) || actor !== user || !record.request) {
         return json(res, 404, { error: "not_found" });
       }
       if (!threadRef.startsWith(`web:${user}:`)) {
@@ -2073,6 +2073,11 @@ const apiRoutes: readonly WebRoute[] = [
             )
           : null;
         if (visible?.status !== 200) return json(res, 404, { error: "not_found" });
+        if (threadRef.startsWith("swarm:")) {
+          const session = (JSON.parse(visible.text) as { session?: { threadRef?: string; surface?: string } }).session;
+          if (session?.surface !== "swarm" || session.threadRef !== threadRef)
+            return json(res, 404, { error: "not_found" });
+        }
       }
 
       const approval = { requestId, approved, ...(scope ? { scope } : {}) };
