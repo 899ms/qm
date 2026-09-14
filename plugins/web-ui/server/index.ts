@@ -658,11 +658,20 @@ function namespacedSendKey(user: string, raw: unknown): string | undefined {
 }
 
 async function postTurnAndMint(res: ServerResponse, turn: unknown, user: string, threadRef: string): Promise<void> {
+  const startedAt = performance.now();
+  let runId: string | undefined;
+  res.once("finish", () => {
+    console.info("[web] turn response", {
+      runId,
+      status: res.statusCode,
+      elapsedMs: Math.round(performance.now() - startedAt),
+    });
+  });
   const r = await coreFetch("POST", `/v1/turns?async=1`, JSON.stringify(turn));
   if (r.status >= 200 && r.status < 300) {
     try {
       const parsed = JSON.parse(r.text) as Record<string, unknown> & { runId?: string };
-      const runId = parsed.runId;
+      runId = parsed.runId;
       if (runId) {
         rememberRun(runId, user, threadRef);
         return json(res, r.status, parsed);
