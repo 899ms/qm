@@ -1,3 +1,4 @@
+import { gatewayModelsJson, gatewayModelsVersion } from "../model/gateway-models.ts";
 import { Type } from "typebox";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -387,6 +388,7 @@ async function directAnthropicJson(
       .includes("anthropic")
   )
     return undefined;
+  await modelGateway?.refresh?.();
   const gateway = modelGatewayRequest(modelGateway, model);
   const requestModel = gateway?.model ?? model;
   const requestKey = gateway?.apiKey ?? apiKey;
@@ -1148,9 +1150,10 @@ export interface ProviderKeys {
 // version instead of leaking a temp dir per turn.
 let cachedCustomModels: { version: number; path: string | null } | null = null;
 function customModelsPath(): string | null {
-  const version = customProvidersVersion();
+  const version = customProvidersVersion() + gatewayModelsVersion();
   if (cachedCustomModels?.version === version) return cachedCustomModels.path;
-  const custom = customModelsJson();
+  const providers = { ...customModelsJson()?.providers, ...gatewayModelsJson() };
+  const custom = Object.keys(providers).length ? { providers } : undefined;
   let path: string | null = null;
   if (custom) {
     path = join(mkdtempSync(join(tmpdir(), "pi-custom-models-")), "models.json");
@@ -1165,6 +1168,7 @@ async function buildModelRuntime(
   modelGateway?: ModelGatewayTransportConfig,
   cacheRetention?: "long",
 ): Promise<ModelRuntime> {
+  await modelGateway?.refresh?.();
   const k: ProviderKeys = typeof keys === "string" ? { anthropic: keys } : keys;
   // Custom providers must exist in the runtime's own registry — a runtime
   // API key alone is invisible to its availability checks. models.json is
@@ -1221,7 +1225,10 @@ async function buildModelRuntime(
         if (!body || typeof body !== "object" || Array.isArray(body)) {
           throw new Error("model gateway request payload must be an object");
         }
-        return { ...body, model: request.target };
+        await modelGateway?.refresh?.();
+        const current = modelGatewayRequest(modelGateway, model);
+        if (!current) throw new Error(`Gateway model is unavailable: ${model.id}`);
+        return { ...body, model: current.target };
       },
     } as unknown as ModelsApiStreamOptions<TApi>;
     return stream(request.model, context, routedOptions);
@@ -1243,7 +1250,10 @@ async function buildModelRuntime(
         if (!body || typeof body !== "object" || Array.isArray(body)) {
           throw new Error("model gateway request payload must be an object");
         }
-        return { ...body, model: request.target };
+        await modelGateway?.refresh?.();
+        const current = modelGatewayRequest(modelGateway, model);
+        if (!current) throw new Error(`Gateway model is unavailable: ${model.id}`);
+        return { ...body, model: current.target };
       },
     } as ModelsSimpleStreamOptions;
     return streamSimple(request.model, context, routedOptions);
