@@ -4,6 +4,7 @@ import { botIdentityFromEnv } from "./delivery.ts";
 import { normalizeAllowFrom, parseAllowFrom } from "./allow-from.ts";
 
 export const NO_RETRY = { retryConfig: { retries: 0 } } as const;
+export const HISTORY_NO_RETRY = { ...NO_RETRY, rejectRateLimitedCalls: true } as const;
 
 export interface SlackPluginConfig {
   installationId?: string;

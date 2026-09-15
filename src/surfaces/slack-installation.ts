@@ -2,6 +2,7 @@ import type { DurableMap } from "../persistence/durable-map.ts";
 import { decryptSecret, deriveConnectorKey, encryptSecret } from "../connectors/connector-client-store.ts";
 
 interface ActiveSlackInstallation {
+  serviceBlocked?: boolean;
   orgId: string;
   disabled: false;
   botTokenEnc: string;
@@ -18,6 +19,7 @@ interface ActiveSlackInstallation {
 
 interface DisabledSlackInstallation {
   installedAt?: number;
+  serviceBlocked?: boolean;
   orgId: string;
   disabled: true;
   updatedAt: number;
@@ -73,6 +75,7 @@ export interface SlackInstallationStore {
     teamName?: string;
   }): Promise<boolean>;
   disableManaged(installId: string): Promise<boolean>;
+  enableManaged(): Promise<boolean>;
 }
 
 export function createSlackInstallationStore(
@@ -114,10 +117,12 @@ export function createSlackInstallationStore(
       return publicStatus(await map.get(orgId));
     },
     async set(input) {
+      if (!map.update) throw new Error("Atomic installation updates are required");
       const updatedAt = Date.now();
       const record: StoredSlackInstallation = {
         orgId,
         disabled: false,
+        serviceBlocked: true,
         botTokenEnc: encryptSecret(input.botToken, key),
         ...(input.appToken ? { appTokenEnc: encryptSecret(input.appToken, key) } : {}),
         ...(input.appId ? { appId: input.appId } : {}),
@@ -128,8 +133,13 @@ export function createSlackInstallationStore(
         updatedBy: input.updatedBy,
         version: `${updatedAt}:${crypto.randomUUID()}`,
       };
-      await map.put(orgId, record);
-      return publicStatus(record);
+      await map.putIfAbsent(orgId, record);
+      const stored = await map.update(orgId, (current) => ({
+        ...record,
+        ...(current.installedAt !== undefined ? { installedAt: current.installedAt } : {}),
+      }));
+      if (!stored) throw new Error("Slack installation disappeared during update");
+      return publicStatus(stored);
     },
     async setManaged(input) {
       if (!map.update) throw new Error("Atomic installation updates are required");
@@ -142,6 +152,7 @@ export function createSlackInstallationStore(
       });
       let accepted = false;
       await map.update(orgId, (record) => {
+        if (record.serviceBlocked || (!record.disabled && !record.installId)) return record;
         if (!record.disabled && record.installId === input.installId) {
           accepted =
             record.teamId === input.teamId && record.appId === input.appId && record.installedAt === input.installedAt;
@@ -163,6 +174,18 @@ export function createSlackInstallationStore(
           updatedBy: "slack-service",
           version: crypto.randomUUID(),
         };
+      });
+      return accepted;
+    },
+    async enableManaged() {
+      if (!map.update) throw new Error("Atomic installation updates are required");
+      let accepted = true;
+      await map.update(orgId, (record) => {
+        if (!record.disabled && !record.installId) {
+          accepted = false;
+          return record;
+        }
+        return { ...record, serviceBlocked: false };
       });
       return accepted;
     },
@@ -188,6 +211,7 @@ export function createSlackInstallationStore(
         const record = await map.update(orgId, (current) => ({
           orgId,
           disabled: true,
+          serviceBlocked: current.serviceBlocked || (!current.disabled && !current.installId),
           ...(current.installedAt ? { installedAt: current.installedAt } : {}),
           updatedAt: Date.now(),
           updatedBy,
@@ -264,8 +288,14 @@ export async function validateSlackInstallation(
   fetchImpl: typeof fetch = fetch,
   readSocketAppId: SlackSocketAppIdReader = readSlackSocketAppId,
 ): Promise<{ teamId?: string; teamName?: string }> {
-  if (!botToken.startsWith("xoxb-")) throw new Error("bot token must start with xoxb-");
-  if (!appToken.startsWith("xapp-")) throw new Error("app token must start with xapp-");
+  if (!botToken.startsWith("xoxb-"))
+    throw new Error(
+      "Bot token must start with xoxb-. Copy the Bot User OAuth Token from OAuth & Permissions after installing the app.",
+    );
+  if (!appToken.startsWith("xapp-"))
+    throw new Error(
+      "App token must start with xapp-. Generate an App-Level Token in Basic Information with connections:write.",
+    );
   const call = async (method: string, token: string, formBody = ""): Promise<SlackValidationResponse> => {
     const response = await fetchImpl(`https://slack.com/api/${method}`, {
       method: "POST",
@@ -273,8 +303,33 @@ export async function validateSlackInstallation(
       body: formBody,
       signal: AbortSignal.timeout(10_000),
     });
+    const label = method === "apps.connections.open" ? "App-level token" : "Bot token";
+    if (response.status === 429) {
+      const seconds = Number(response.headers.get("retry-after"));
+      throw new Error(
+        `Slack is temporarily rate-limiting validation. Try again${seconds > 0 && Number.isFinite(seconds) ? ` in ${Math.ceil(seconds)} seconds` : " shortly"}. Your existing connection has not changed.`,
+      );
+    }
     const payload = (await response.json()) as SlackValidationResponse;
-    if (!response.ok || !payload.ok) throw new Error(`${method} failed: ${payload.error ?? `HTTP ${response.status}`}`);
+    if (!response.ok || !payload.ok) {
+      if (["invalid_auth", "token_revoked", "not_authed", "account_inactive"].includes(payload.error ?? ""))
+        throw new Error(
+          `${label} was rejected by Slack. Copy a current token from the same installed Slack app and try again.`,
+        );
+      if (payload.error === "missing_scope")
+        throw new Error(
+          method === "apps.connections.open"
+            ? "App-level token needs connections:write. Generate a new token in Basic Information with that scope."
+            : "Bot token is missing permissions. Apply the provided manifest and reinstall the app in OAuth & Permissions.",
+        );
+      if (payload.error === "not_allowed_token_type")
+        throw new Error(
+          `${label} has the wrong token type. Use the Bot User OAuth Token (xoxb-) and App-Level Token (xapp-) from the setup guide.`,
+        );
+      throw new Error(
+        `${label} validation failed (${payload.error ?? `HTTP ${response.status}`}). Check that the app is installed and Socket Mode is enabled, then try again.`,
+      );
+    }
     return payload;
   };
   const auth = await call("auth.test", botToken);
@@ -287,7 +342,10 @@ export async function validateSlackInstallation(
   const connection = await call("apps.connections.open", appToken);
   if (!connection.url) throw new Error("apps.connections.open returned no WebSocket URL");
   const socketAppId = await readSocketAppId(connection.url);
-  if (socketAppId !== botAppId) throw new Error("bot token and app token belong to different Slack apps");
+  if (socketAppId !== botAppId)
+    throw new Error(
+      "The bot token and app token belong to different Slack apps. Copy both tokens from the same app; your existing connection has not changed.",
+    );
   return {
     ...(auth.team_id ? { teamId: auth.team_id } : {}),
     ...(auth.team ? { teamName: auth.team } : {}),
