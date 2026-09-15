@@ -107,7 +107,7 @@ export interface TurnHandler {
   handleIncoming(inc: Incoming, client: any): Promise<void>;
   dispatch(key: string, inc: Incoming, client: any): Promise<void>;
   handleReactionEvent(evt: SlackReactionEvent, eventId: string | undefined, client: any, added: boolean): Promise<void>;
-  botHasStakeInThread(client: any, channel: string, threadTs: string): Promise<boolean>;
+  botHasStakeInThread(client: any, channel: string, threadTs: string, before?: string): Promise<boolean>;
 }
 
 function channelType(kind: SlackConversationKind, conversationKind: SlackConversationKind): string {
@@ -164,18 +164,30 @@ export function createTurnHandler(deps: {
     externalParticipantsEnabled,
   } = deps;
   const { classifyUserCached, classifyActor, getChannelInfo, channelMembership } = directory;
-  const { mirrorSelfPost, mirrorMessageEvent } = mirror;
+  const { mirrorMessageEvent } = mirror;
   const { callCore, inFlightRuns, inFlightRunByThread, ackRunDelivery } = flow;
 
   const reactionsInFlight = new Set<string>();
 
-  async function botHasStakeInThread(client: any, channel: string, threadTs: string): Promise<boolean> {
+  async function botHasStakeInThread(
+    client: any,
+    channel: string,
+    threadTs: string,
+    before?: string,
+  ): Promise<boolean> {
     const cached = threads.get(channel, threadTs);
     if (cached !== undefined) return cached;
     try {
       const messages = deps.readHistory
-        ? (await deps.readHistory(client, channel, threadTs)).raw
-        : ((await client.conversations.replies({ channel, ts: threadTs, limit: 200 })).messages ?? []);
+        ? (await deps.readHistory(client, channel, threadTs, before)).raw
+        : ((
+            await client.conversations.replies({
+              channel,
+              ts: threadTs,
+              limit: 200,
+              ...(before ? { latest: before, inclusive: false } : {}),
+            })
+          ).messages ?? []);
       const present = threadHasBotStake(messages, ids.botUserId, ids.ownBotId);
       threads.mark(channel, threadTs, present);
       return present;
@@ -228,16 +240,12 @@ export function createTurnHandler(deps: {
       });
       if (idempotencyKey) {
         const res = await postWithVerify(client, replyArgs(msg, true) as PostMessageArgs, idempotencyKey);
-        for (const part of res.parts ?? [{ ts: res.ts, text: msg }]) {
-          mirrorSelfPost(inc.channel, part.ts, part.text, { sub: replyThreadTs });
-        }
         return res.ts;
       }
       const parts = blocks ? [msg] : safeChunks(msg, SLACK_POST_SPLIT_LIMIT);
       let firstTs: string | undefined;
       for (const [i, part] of parts.entries()) {
         const ts = (await client.chat.postMessage(replyArgs(part, parts.length === 1))).ts as string | undefined;
-        mirrorSelfPost(inc.channel, ts, part, { sub: replyThreadTs });
         if (i === 0) firstTs = ts;
       }
       return firstTs;
@@ -370,9 +378,7 @@ export function createTurnHandler(deps: {
               ...(metadata ? { metadata } : {}),
               ...botIdentityArgs(),
             })
-            .then(() => {
-              mirrorSelfPost(inc.channel, ts, text, { sub: replyThreadTs, editedAt: Date.now() });
-            }),
+            .then(() => {}),
         checkpoint: async (ts) => {
           if (queuedRunId) await core.reportRunEditRef(queuedRunId, ts);
         },
@@ -385,9 +391,7 @@ export function createTurnHandler(deps: {
       goalNotice = createGoalNoticePresenter({
         post: (text, blocks) => postReply(text, blocks),
         update: (ts, text, blocks) =>
-          client.chat.update({ channel: inc.channel, ts, text, blocks, ...botIdentityArgs() }).then(() => {
-            mirrorSelfPost(inc.channel, ts, text, { sub: replyThreadTs, editedAt: Date.now() });
-          }),
+          client.chat.update({ channel: inc.channel, ts, text, blocks, ...botIdentityArgs() }).then(() => {}),
         onError: (error) => console.error("[slack-plugin] goal notice update failed:", (error as Error).message),
       });
     }
@@ -402,6 +406,7 @@ export function createTurnHandler(deps: {
           channel: inc.channel,
           ts: inc.ts,
           text: inc.rawText,
+          files: inc.files,
           user: inc.userId,
           thread_ts: inc.threadTs,
           channel_type: channelType(inc.kind, conversationKind),
