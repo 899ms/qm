@@ -992,6 +992,10 @@ resource "aws_ecs_service" "service" {
     service {
       port_name      = each.key
       discovery_name = each.key
+      timeout {
+        idle_timeout_seconds        = 300
+        per_request_timeout_seconds = 0
+      }
       client_alias {
         dns_name = "${each.key}.${var.cloud_map_namespace}"
         port     = each.value.internal_port
