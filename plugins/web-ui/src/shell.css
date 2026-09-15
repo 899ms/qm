@@ -2319,6 +2319,7 @@ a.chat-row-open {
   padding: 10px 12px;
 }
 .approval-text {
+  overflow-wrap: anywhere;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -3079,10 +3080,11 @@ a.chat-row-open {
 }
 .composer-approval-panel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   margin: 0 0 10px;
 
-  max-height: calc(100dvh - 130px);
+  max-height: min(calc(100dvh - 130px), calc(100cqh - 130px));
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -3096,6 +3098,8 @@ a.chat-row-open {
 }
 .composer-approval-copy {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  overflow-wrap: anywhere;
   width: 100%;
   gap: 5px;
   min-width: 0;
@@ -7998,6 +8002,7 @@ h3.ambient-field-label {
 }
 
 .split-pane-content {
+  container-type: size;
   position: relative;
   width: 100%;
   height: 100%;
