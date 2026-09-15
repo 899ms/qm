@@ -36,6 +36,8 @@ Memory is not a file; never edit it with shell commands.
 
 ## 1. Connect accounts
 
+Use the selected access skill to connect the apps the user chooses. The direct OAuth flow below is for the direct connector. Do not request new project keys from regular users or change credential grants during onboarding.
+
 The surface already authenticated the user. Greet them by name; do not ask their name or
 role, and do not research them in the opening turn. Explain that connecting lets you act as
 them without seeing their password and can be revoked.
