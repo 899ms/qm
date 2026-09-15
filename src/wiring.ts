@@ -931,6 +931,9 @@ export function buildApp(
   for (const name of Object.keys(buildBackend) as Array<Config["sandboxBackend"]>) {
     if (name !== config.sandboxBackend && enabledBackends.has(name)) sandboxBackends[name] = buildBackend[name]();
   }
+  for (const backend of Object.values(config.sandboxScopeDefaults ?? {})) {
+    if (backend && !sandboxBackends[backend]) throw new Error(`Scope sandbox backend ${backend} is not configured`);
+  }
   const sandboxRoutes = artifactMap<SandboxRoute>("sandbox_routing");
   const sandboxResources = createSandboxResources({
     enabled: config.sandboxResourcesEnabled,
@@ -949,6 +952,7 @@ export function buildApp(
     routes: sandboxRoutes,
     backends: sandboxBackends,
     defaultBackend: config.sandboxBackend,
+    scopeDefaults: config.sandboxScopeDefaults,
     lock: advisoryLock,
     beforeRetire: async (record) => {
       if (
@@ -986,12 +990,14 @@ export function buildApp(
     backends: sandboxBackends,
     routes: sandboxRoutes,
     defaultBackend: config.sandboxBackend,
+    scopeDefaults: config.sandboxScopeDefaults,
     onError: sandboxOnError,
   });
   const sandboxMigration = createSandboxMigrationRunner({
     backends: sandboxBackends,
     routes: sandboxRoutes,
     defaultBackend: config.sandboxBackend,
+    scopeDefaults: config.sandboxScopeDefaults,
     advisoryLock,
     settleMs: ROUTE_CACHE_TTL_MS,
     provisionOptions: async (scopeId) => {
