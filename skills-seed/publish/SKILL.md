@@ -55,6 +55,18 @@ publish({ renameFrom: "s-1176-p-5050", name: "status-board" })
 
 `publish` returns `{ id, name, version, url, dataDir? }` — give the user the `url` (`/d/<name>/`).
 
+## App bar and editing
+
+On a configured app subdomain, signed-in people who can manage the app automatically
+see a slim top bar. Chat opens a resizable editing conversation beside the app. Normal
+app links and refreshes keep editing available for the signed-in session; viewers with
+read-only access see the app alone.
+
+The bar uses a consistent neutral appearance, independent of the app's theme. Its
+name follows the app document title. The drawer opens directly into an empty composer;
+the app identity is supplied as conversation context, not pasted into the draft. The
+conversation survives app reloads after a publish.
+
 ## Durable data — where app state must live
 
 The app's disk is **reset from source on every relaunch**, with one exception: when the
