@@ -489,11 +489,12 @@ export async function startSlackPlugin(
   return {
     async stop(): Promise<void> {
       if (stopped) {
+        await replaySweeper?.stop();
         await app.stop();
         return;
       }
       stopped = true;
-      replaySweeper?.stop();
+      await replaySweeper?.stop();
       if (deliveriesTimer) clearInterval(deliveriesTimer);
       if (emojiCatalogTimer) clearInterval(emojiCatalogTimer);
       if (followerRetry) clearTimeout(followerRetry);
