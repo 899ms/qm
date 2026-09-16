@@ -1108,7 +1108,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       ),
       renameFrom: Type.Optional(Type.String({ description: "Rename the deployment currently named this to `name`." })),
       env: Type.Optional(
-        Type.Record(Type.String(), Type.String(), { description: "Env vars baked into the immutable version." }),
+        Type.Record(Type.String(), Type.String(), {
+          description:
+            "Env vars baked into the version. When republishing, omit to keep the env of the most recent version (including a failed attempt); pass an object to replace it ({} clears).",
+        }),
       ),
       rollbackTo: Type.Optional(
         Type.Integer({ description: "Flip the deployment named `name` back to this version number." }),
