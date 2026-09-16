@@ -386,14 +386,14 @@ export function stopWithBackstop(
 ): void {
   const hardExit = setTimeout(() => {
     console.error(`[${label}] drain overran; releasing in-flight leases before forced exit`);
-    void Promise.race([runtime.releaseInFlightRuns(), sleep(3_000, { unref: true })]).finally(() => process.exit(0));
+    void Promise.race([runtime.releaseInFlightRuns(), sleep(3_000, { unref: true })]).finally(() => process.exit());
   }, shutdownDrainMs + 5_000);
   hardExit.unref();
   void runtime.stop().then(
     () => {
       clearTimeout(hardExit);
       beforeExit?.();
-      process.exit(0);
+      process.exit();
     },
     (e: unknown) => {
       console.error(`[${label}] graceful stop failed: ${errMessage(e)}`);
