@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   activityOf,
+  sidebarSessions,
   applySessionState,
   isAbandonedNewChat,
   shouldStartProactiveOpener,
@@ -515,4 +516,13 @@ test("first personal chat opens proactively even when background suggestions alr
   assert.equal(shouldStartProactiveOpener({ ...first, sessionId: "existing" }), false);
   assert.equal(shouldStartProactiveOpener({ ...first, scopeId: "channel:C123" }), false);
   assert.equal(shouldStartProactiveOpener({ ...first, messageCount: 1 }), false);
+});
+
+test("sidebar excludes attached subagents including pinned and orphaned children", () => {
+  const parent = saved("parent", "web:alice:parent");
+  const child = { ...saved("child", "agent:main:subagent:child"), parentSessionId: parent.id };
+  const pinned = { ...child, id: "pinned", pinned: true };
+  const orphan = { ...child, id: "orphan", parentSessionId: "missing" };
+  const detached = saved("detached", "agent:main:subagent:detached");
+  assert.deepEqual(sidebarSessions([parent, child, pinned, orphan, detached]), [parent, detached]);
 });

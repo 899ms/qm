@@ -21,6 +21,10 @@ export function activityOf(s: CoreSession): number {
 
 export type ChatBrowseStatus = "active" | "waiting" | "archived";
 
+export function sidebarSessions(sessions: readonly CoreSession[]): CoreSession[] {
+  return sessions.filter((session) => !session.parentSessionId);
+}
+
 export function splitPinned<T extends Pick<CoreSession, "pinned">>(sessions: readonly T[]): { pinned: T[]; rest: T[] } {
   const pinned: T[] = [];
   const rest: T[] = [];
