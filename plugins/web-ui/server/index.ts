@@ -1,3 +1,5 @@
+import "./instrument.ts";
+import { flushErrorReporting, reportBackendError } from "../../chassis/src/error-reporting.ts";
 import { appEditSlug } from "../src/app-edit.ts";
 import { composioCallbackUrl } from "./composio-return.ts";
 import { sharedSessionHtml } from "./shared-session.ts";
@@ -3085,6 +3087,7 @@ export const handler = async (req: IncomingMessage, res: ServerResponse) => {
 
 const server = createServer((req, res) => {
   void handler(req, res).catch((err: unknown) => {
+    reportBackendError(err);
     console.error("%s", `[web-ui] 502 ${req.method ?? "?"} ${req.url ?? "?"}:`, String(err));
     if (!res.headersSent) json(res, 502, { error: "bad_gateway", message: "upstream error" });
     else res.end();
@@ -3109,8 +3112,10 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         void runInboxFeed();
       });
     })
-    .catch((err: unknown) => {
+    .catch(async (err: unknown) => {
+      reportBackendError(err);
       console.error("[web-ui] failed to start:", String(err));
+      await flushErrorReporting();
       process.exit(1);
     });
 }
