@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createPiHarness } from "../src/harness/pi-harness.ts";
@@ -78,13 +79,16 @@ function gatedSse(events: Array<Record<string, unknown>>, gate: Promise<void>): 
   return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
 }
 
-for (const variant of ["text", "images", "finished during preparation"]) {
+for (const variant of ["text", "images", "documents", "finished during preparation"]) {
   const withImages = variant !== "text";
   const finishDuringPreparation = variant === "finished during preparation";
   test(`tape rows land in consumption order, including steered ${variant}`, async () => {
     const signals = createMemoryRunSignalStore();
     const harness = createPiHarness({ apiKey: "sk-test", signals });
     const sink: Sink = { entries: [], tape: [] };
+    const documentBase64 = (await readFile(new URL("./fixtures/documents/sample.pdf", import.meta.url))).toString(
+      "base64",
+    );
     let releaseFirstStep = () => {};
     const steerQueued = new Promise<void>((resolve) => {
       releaseFirstStep = () => setTimeout(resolve, 50);
@@ -111,6 +115,9 @@ for (const variant of ["text", "images", "finished during preparation"]) {
           return {
             text: `${text}\nFile available in inbox/photo.png`,
             images: [{ mimeType: "image/png", dataBase64: "YWJj", artifactId: "steered-photo" }],
+            ...(variant === "documents"
+              ? { documents: [{ name: "steered.pdf", mimeType: "application/pdf", dataBase64: documentBase64 }] }
+              : {}),
           };
         };
       const emit = turn.emit;
@@ -151,6 +158,11 @@ for (const variant of ["text", "images", "finished during preparation"]) {
             artifactRef: "steered-photo",
           },
         );
+      }
+      if (variant === "documents") {
+        assert.ok(!JSON.stringify(requestMessages[0]).includes(documentBase64));
+        assert.ok(JSON.stringify(requestMessages[1]).includes(documentBase64));
+        assert.ok(!JSON.stringify(sink.tape).includes(documentBase64));
       }
       assert.equal(calls, 2);
       assert.equal(tapeRowsAtDispatch[0], 1, "the trigger user row is committed before the first dispatch");
@@ -284,5 +296,81 @@ test("completed Pi attach results retain openable files in viewer history", asyn
   } finally {
     globalThis.fetch = realFetch;
     await store.releaseLease(lease);
+  }
+});
+
+test("native document bytes reach the provider on every step without entering the transcript tape", async () => {
+  const harness = createPiHarness({ apiKey: "sk-test" });
+  const sink: Sink = { entries: [], tape: [] };
+  const realFetch = globalThis.fetch;
+  const requests: Array<Record<string, unknown>> = [];
+  const dataBase64 = (await readFile(new URL("./fixtures/documents/sample.pdf", import.meta.url))).toString("base64");
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    requests.push(JSON.parse(String(init?.body)));
+    return sse(textReplyEvents("read the document"));
+  }) as typeof fetch;
+  try {
+    await harness.turns.runTurn(
+      turnInput("native-documents", sink, {
+        documents: [{ name: "report.pdf", mimeType: "application/pdf", dataBase64, artifactId: "doc1" }],
+      }),
+    );
+    assert.match(JSON.stringify(requests), /"type":"document"/);
+    assert.ok(JSON.stringify(requests).includes(dataBase64));
+    assert.ok(!JSON.stringify(sink.tape).includes(dataBase64));
+    await harness.turns.runTurn(turnInput("native-documents", sink));
+    assert.ok(
+      !JSON.stringify(requests.at(-1)).includes(dataBase64),
+      "reused sessions must clear documents when the audience no longer supplies them",
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("Pi request captures exclude document fallback text on Responses routes", async () => {
+  const harness = createPiHarness({ openaiApiKey: "sk-test", modelId: "gpt-5.6-sol" });
+  const sink: Sink = { entries: [], tape: [] };
+  const captures: unknown[] = [];
+  const realFetch = globalThis.fetch;
+  const requests: unknown[] = [];
+  globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    requests.push(JSON.parse(String(init?.body)));
+    return sse([
+      { type: "response.created", response: { id: "resp_qa", status: "in_progress" } },
+      {
+        type: "response.completed",
+        response: {
+          id: "resp_qa",
+          status: "completed",
+          output: [],
+          usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 },
+        },
+      },
+    ]);
+  }) as typeof fetch;
+  try {
+    await harness.turns.runTurn(
+      turnInput("capture-document-fallback", sink, {
+        documents: [
+          {
+            name: "sample.rtf",
+            mimeType: "application/rtf",
+            dataBase64: (await readFile(new URL("./fixtures/documents/sample.rtf", import.meta.url))).toString(
+              "base64",
+            ),
+          },
+        ],
+        recordLlmRequest: async (capture) => {
+          captures.push(capture);
+        },
+      }),
+    );
+    assert.ok(JSON.stringify(requests).includes("RTF-QUARTZ-731"));
+    assert.ok(captures.length > 0);
+    assert.ok(!JSON.stringify(captures).includes("RTF-QUARTZ-731"));
+    assert.ok(!JSON.stringify(sink.tape).includes("RTF-QUARTZ-731"));
+  } finally {
+    globalThis.fetch = realFetch;
   }
 });
