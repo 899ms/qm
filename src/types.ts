@@ -392,6 +392,8 @@ export interface LoopThreadMessage {
 }
 
 export interface LoopItem {
+  previousLoopId?: string;
+  inboxPreview?: LoopSourcePayload;
   id: string;
   loopId: string;
   sourceKey: string;

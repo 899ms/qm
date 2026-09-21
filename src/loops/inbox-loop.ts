@@ -9,8 +9,6 @@ const INBOX_LOOP_SURFACE = "inbox";
 
 export const INBOX_SYNC_TASK_VERSION = 4;
 
-export const INBOX_SYNC_CRON_TITLE = "Inbox sync";
-
 export const INBOX_SYNC_DEFAULT_EVERY_MS = 15 * 60 * 1000;
 
 export const INBOX_LEDGER_MAX_ITEMS = 500;
@@ -31,6 +29,40 @@ export function renderInboxSyncTask(loopId: string): string {
 3. For each new or refreshed item, investigate before drafting: read the whole thread, and check whatever context makes the reply substantive (calendar for scheduling asks, earlier email/Slack history for open questions). Draft the reply in the user's own voice — for email follow the email-draft-in-voice skill (build the voice profile first if it is missing); for Slack match how the user actually writes in Slack (check their recent messages: register, length, punctuation). Punctuation hard rule: never use em dashes or en dashes in a draft; use a comma, period, or "..." instead, and re-read every draft before posting to strip any that slipped in.
 4. POST $AGENT_API_URL/v1/loops/${loopId}/items with {"items": [...]}. Each item: source ("gmail"|"slack"), sourceKey, title (subject or channel label), from (display name), fromDetail (address or @handle), snippet (the waiting message, <=200 chars), context (up to 6 prior thread messages as {author, at, text}), receivedAt (ms epoch of the waiting message), externalUrl (deep link to the original in Gmail/Slack), draft ({to, cc, subject, body} for gmail — body plain text; {body} for slack), and the gmail/slack metadata block from step 2. IMAGES: when a thread message carries image attachments, include an "images" array of their https URLs (Slack: url_private; up to 4) on the matching context entry, and on the item itself for the waiting message — the UI proxies and renders them inline as the user's own eyes would see them in Slack/Gmail.
 5. Found nothing new and changed nothing? Finish silently. Only raise your voice on a real fault (a connector that errors repeatedly) — and then only briefly.`;
+}
+
+export async function ensureDefaultInboxLoops(store: LoopStore, owner: string): Promise<Loop[]> {
+  const loops: Loop[] = [];
+  for (const [source, name] of [
+    ["gmail", "Email"],
+    ["slack", "Slack"],
+  ]) {
+    const existing = (await store.list()).find(
+      (loop) => loop.ownerScopeId === scopeId("personal", owner) && loop.surface === `inbox:${source}`,
+    );
+    if (existing) {
+      loops.push(existing);
+      continue;
+    }
+    const { loop } = await store.create({
+      owner,
+      createdBy: owner,
+      ownerScopeId: scopeId("personal", owner),
+      name: name!,
+      surface: `inbox:${source}`,
+      sources: [source!],
+      purpose: `Messages in ${name} waiting on your reply.`,
+      playbook: renderSourceInboxTask("$LOOP_ID", source!),
+      successCondition: `Every ${name} conversation needing a reply has a draft for review.`,
+      shipActions: [{ action: "send", gate: "hold" }],
+    });
+    loops.push(loop);
+  }
+  return loops;
+}
+
+export function renderSourceInboxTask(loopId: string, source: string): string {
+  return `Source restriction: scan only ${source}. Never read or ingest another source. Keep a separate watermark for this Loop.\n${renderInboxSyncTask(loopId)}`;
 }
 
 function isInboxLoop(loop: Loop): boolean {
