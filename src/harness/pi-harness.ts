@@ -1764,6 +1764,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         "fast-mode",
         "provider-sessions",
         "native-tape",
+        "goal-enforcement",
       ]),
     },
     {
