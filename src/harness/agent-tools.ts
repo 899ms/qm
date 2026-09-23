@@ -1356,8 +1356,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     name: "history",
     label: "history",
     description:
-      "Search or reopen THIS conversation's own durable transcript — every past turn and tool " +
-      "call/result, including parts compacted out of your current context. Use it when something " +
+      "Search or reopen THIS conversation's own durable transcript — past turns and tool calls, " +
+      "including parts compacted out of your current context. Tool results are excluded. Use it when something " +
       'earlier in this conversation is referenced but not in front of you ("that file from last ' +
       'week", "what did we decide"). Distinct from `memory` search, which searches remembered facts ' +
       "across conversations; `history` searches only this one, verbatim. With `query`, matching is " +
@@ -1388,7 +1388,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           return recordResult(
             callId,
             { tool: "history", error: "seq must be an integer" },
-            text("[error] history `seq` must be an integer entry number, like the 87 in tool_result#87."),
+            text("[error] history `seq` must be an integer entry number, like the 87 in tool_call#87."),
             true,
           );
         }
