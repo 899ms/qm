@@ -2012,7 +2012,9 @@ qm-markdown .tok-in {
   line-height: 1.55;
 }
 .user-bubble {
-  background: color-mix(in srgb, var(--secondary) 76%, var(--background));
+  --bubble-bg: color-mix(in srgb, var(--secondary) 76%, var(--background));
+  position: relative;
+  background: var(--bubble-bg);
   color: var(--foreground);
   overflow-wrap: anywhere;
 }
@@ -2039,26 +2041,70 @@ qm-markdown .tok-in {
   overflow: auto;
   overscroll-behavior: contain;
 }
+.message-stack .user-row.stuck:not(.pin-expanded) {
+  min-height: var(--pin-rest-height);
+}
+.message-stack .user-row.stuck:not(.pin-expanded) .user-bubble > .pin-content {
+  max-height: var(--pin-content-max, none);
+}
+.message-stack
+  .user-row.stuck:not(.pin-expanded)
+  .user-bubble
+  > .pin-content:has(code-block, pre, table, img, svg, math, .katex-display, video, iframe) {
+  max-height: var(--pin-content-max, 2lh);
+}
+.message-stack .user-row.pin-condensed:not(.pin-expanded) .user-bubble > .pin-content {
+  -webkit-line-clamp: 2;
+}
+.message-stack
+  .user-row.pin-condensed:not(.pin-expanded)
+  .user-bubble
+  > .pin-content
+  :is(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6) {
+  margin-block: 0;
+}
+.message-stack .user-row.pin-condensed:not(.pin-expanded) .user-bubble > .pin-content :is(h1, h2, h3, h4, h5, h6) {
+  font-size: inherit;
+  line-height: inherit;
+}
 .pin-toggle {
   display: none;
-  width: fit-content;
-  margin: 6px 0 0 auto;
-  pointer-events: auto;
+  position: absolute;
+  right: 14px;
+  bottom: 10px;
+  height: 1lh;
+  margin: 0;
+  padding: 0 0 0 36px;
   border: 0;
-  border-radius: 6px;
-  background: transparent;
+  background: linear-gradient(to right, transparent, var(--bubble-bg) 28px);
   color: var(--muted-foreground);
   font: inherit;
-  font-size: 12px;
-  padding: 6px 8px;
+  pointer-events: auto;
   cursor: pointer;
 }
 .message-stack .user-row:not(:has(~ .user-row)) > .user-bubble > .pin-toggle:not([hidden]) {
   display: flex;
+  align-items: center;
+  gap: 2px;
 }
-.pin-toggle:hover {
+.message-stack .user-row.pin-expanded > .user-bubble > .pin-toggle > .icon {
+  transform: rotate(180deg);
+}
+.message-stack .user-row.pin-expanded > .user-bubble > .pin-toggle,
+.message-stack
+  .user-bubble
+  > .pin-content:has(code-block, pre, table, img, svg, math, .katex-display, video, iframe)
+  ~ .pin-toggle {
+  position: static;
+  height: auto;
+  margin: 6px 0 0 auto;
+  padding: 0;
+  background: none;
+  font-size: 12px;
+}
+.pin-toggle:is(:hover, :focus-visible) {
   color: var(--foreground);
-  background: var(--secondary);
+  text-decoration: underline;
 }
 .message-files,
 .attachment-strip {
