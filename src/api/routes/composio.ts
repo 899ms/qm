@@ -1,5 +1,5 @@
 import { mintSignedPayload, verifySignedPayload } from "../../auth/signed-token.ts";
-import { canonicalPerson, samePerson } from "../../directory/person.ts";
+import { canonicalPerson, personIds, samePerson } from "../../directory/person.ts";
 import { PrincipalLinkError } from "../../identity/principal-links.ts";
 import { createHash } from "node:crypto";
 import { scopeId } from "../../types.ts";
@@ -14,6 +14,10 @@ export function composioUserId(org: string, principal: string): string {
   return `qm_${createHash("sha256")
     .update(JSON.stringify([org, principal]))
     .digest("hex")}`;
+}
+
+function composioUserIds(principal: string): string[] {
+  return [...new Set(personIds(principal).map((id) => composioUserId(orgId(), id)))];
 }
 
 async function credential(ctx: ApiCtx): Promise<{ key: string; principal: string } | null> {
@@ -148,7 +152,7 @@ async function authorize(ctx: ApiCtx, linkSlack = false): Promise<void> {
   }
   try {
     const session = await request(ctx, access.key, "/tool_router/session", {
-      user_id: composioUserId(orgId(), access.principal),
+      user_id: composioUserId(orgId(), canonicalPerson(access.principal)),
       toolkits: { enable: [toolkit] },
       manage_connections: { enable: false },
       workbench: { enable: false },
@@ -207,8 +211,8 @@ async function connections(ctx: ApiCtx): Promise<void> {
   if (!access) return;
   const cursor = ctx.url.searchParams.get("cursor") ?? "";
   if (cursor.length > 2048) return sendJson(ctx.res, 400, { error: "bad_cursor" });
-  const userId = composioUserId(orgId(), access.principal);
-  const query = new URLSearchParams({ user_ids: userId, statuses: "ACTIVE", limit: "100" });
+  const userIds = composioUserIds(access.principal);
+  const query = new URLSearchParams({ user_ids: userIds.join(","), statuses: "ACTIVE", limit: "100" });
   if (cursor) query.set("cursor", cursor);
   try {
     const data = await request(ctx, access.key, `/connected_accounts?${query}`);
@@ -216,7 +220,7 @@ async function connections(ctx: ApiCtx): Promise<void> {
     const items = data.items.flatMap((item) => {
       if (
         !item ||
-        item.user_id !== userId ||
+        !userIds.includes(item.user_id) ||
         item.status !== "ACTIVE" ||
         item.is_disabled === true ||
         typeof item.id !== "string" ||
@@ -225,7 +229,7 @@ async function connections(ctx: ApiCtx): Promise<void> {
         !/^[a-zA-Z0-9_-]{1,100}$/.test(item.toolkit.slug)
       )
         return [];
-      return [{ id: item.id, toolkit: item.toolkit.slug }];
+      return [{ id: item.id, toolkit: item.toolkit.slug, userId: item.user_id }];
     });
     ctx.res.setHeader("Cache-Control", "no-store");
     return sendJson(ctx.res, 200, {
@@ -244,7 +248,8 @@ async function identity(ctx: ApiCtx): Promise<void> {
   const principal = ctx.actor?.p ?? ctx.capability?.actorId;
   if (!principal || !(await activePrincipal(ctx.deps, principal)))
     return sendJson(ctx.res, 403, { error: "forbidden" });
-  return sendJson(ctx.res, 200, { userId: composioUserId(orgId(), principal) });
+  const userIds = composioUserIds(principal);
+  return sendJson(ctx.res, 200, { userId: userIds[0], userIds });
 }
 
 export interface SlackAccountLink {
@@ -262,23 +267,34 @@ async function slackStatus(ctx: ApiCtx): Promise<void> {
   if (!access) return;
   const installation = await ctx.deps.slackInstallation?.get();
   const workspaceInstalled = Boolean(installation?.botToken || ctx.deps.slackEnvBotToken);
-  const record = await ctx.deps.slackAccounts?.get(access.principal);
   ctx.res.setHeader("Cache-Control", "no-store");
-  if (!record || !samePerson(record.memberId, access.principal))
-    return sendJson(ctx.res, 200, { connected: false, workspaceInstalled });
-  try {
-    const account = await request(ctx, access.key, `/connected_accounts/${encodeURIComponent(record.accountId)}`);
-    const toolkit = account.toolkit as { slug?: string } | undefined;
-    const connected =
-      account.id === record.accountId &&
-      account.user_id === composioUserId(orgId(), access.principal) &&
-      toolkit?.slug === "slack" &&
-      account.status === "ACTIVE" &&
-      account.is_disabled !== true;
-    return sendJson(ctx.res, 200, { connected, workspaceInstalled, user: record.user, workspace: record.workspace });
-  } catch {
-    return sendJson(ctx.res, 502, { error: "status_unavailable" });
+  let failed = false;
+  for (const id of personIds(access.principal)) {
+    const record = await ctx.deps.slackAccounts?.get(id);
+    if (!record || !samePerson(record.memberId, access.principal)) continue;
+    try {
+      const account = await request(ctx, access.key, `/connected_accounts/${encodeURIComponent(record.accountId)}`);
+      const toolkit = account.toolkit as { slug?: string } | undefined;
+      if (
+        account.id === record.accountId &&
+        composioUserIds(access.principal).includes(String(account.user_id)) &&
+        toolkit?.slug === "slack" &&
+        account.status === "ACTIVE" &&
+        account.is_disabled !== true
+      )
+        return sendJson(ctx.res, 200, {
+          connected: true,
+          workspaceInstalled,
+          user: record.user,
+          workspace: record.workspace,
+        });
+    } catch {
+      failed = true;
+    }
   }
+  return failed
+    ? sendJson(ctx.res, 502, { error: "status_unavailable" })
+    : sendJson(ctx.res, 200, { connected: false, workspaceInstalled });
 }
 
 async function completeSlack(ctx: ApiCtx): Promise<void> {
@@ -312,7 +328,7 @@ async function completeSlack(ctx: ApiCtx): Promise<void> {
     const toolkit = account.toolkit as { slug?: string } | undefined;
     if (
       account.id !== proof.accountId ||
-      account.user_id !== composioUserId(orgId(), access.principal) ||
+      !composioUserIds(access.principal).includes(String(account.user_id)) ||
       toolkit?.slug !== "slack" ||
       account.is_disabled === true
     )

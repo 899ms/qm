@@ -30,7 +30,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "GET",
         path: "/v1/composio/identity",
         summary:
-          "read your stable Composio userId used by the web app picker; this selects accounts and does not grant access to them",
+          "read your canonical Composio userId and verified linked userIds used by the web app picker; this selects accounts and does not grant access to them",
       },
     ],
   },
