@@ -305,6 +305,9 @@ function childRunRequest(child: Session, meta: SpawnMeta, text: string, displayT
         ? { destination: meta.origin.destination }
         : {}),
       ...(meta.origin?.kind === "automation" && meta.origin.useOwnerKeychain ? { useOwnerKeychain: true } : {}),
+      ...(meta.origin?.kind === "automation" && meta.origin.ownerResourcesRequireOpen
+        ? { ownerResourcesRequireOpen: true }
+        : {}),
       screenData: text,
     },
     ...(meta.unattendedGrants ? { unattendedGrants: [...meta.unattendedGrants] } : {}),
@@ -577,6 +580,7 @@ export function createSessionSyscalls(deps: SessionSyscallDeps): SessionSyscalls
                       origin: {
                         kind: "automation" as const,
                         ...(caller.origin.useOwnerKeychain ? { useOwnerKeychain: true } : {}),
+                        ...(caller.origin.ownerResourcesRequireOpen ? { ownerResourcesRequireOpen: true } : {}),
                         ...(caller.origin.destination ? { destination: caller.origin.destination } : {}),
                       },
                     }
