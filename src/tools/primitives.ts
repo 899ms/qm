@@ -4,7 +4,7 @@ import type { RuntimeRequest, RuntimeResult } from "../harness/runtime-types.ts"
 import { readContextFile } from "../resolution/context-files.ts";
 import { contextMemory, type TurnContext } from "../resolution/turn-context.ts";
 import { randomUUID } from "node:crypto";
-import type { SandboxResources } from "../sandbox/sandbox-resources.ts";
+import type { SandboxAccessPlan, SandboxResources } from "../sandbox/sandbox-resources.ts";
 import { join } from "node:path";
 import { interpolateSplitEnv } from "../deployment/deployment-layer.ts";
 import type { CredentialPathSpec } from "../credentials/resident-paths.ts";
@@ -13,6 +13,7 @@ import { ROUTE_CACHE_TTL_MS, type SandboxBackendName } from "../sandbox/sandbox-
 import type { SandboxMigrationRunner } from "../sandbox/sandbox-migration-runner.ts";
 import { CapabilityUnsupportedError, hasParentPathSegment, supportsAgentComputerExport } from "../sandbox/sandbox.ts";
 import type {
+  ApprovalGrantModes,
   CommandPolicy,
   CommandRule,
   ConversationKind,
@@ -118,7 +119,15 @@ export class NeedsApproval extends Error {
   kind: "approval";
   matched?: string;
   approvalKey?: string;
-  constructor(command: string, reason: string, kind: "approval" = "approval", matched?: string, approvalKey?: string) {
+  grantModes?: ApprovalGrantModes;
+  constructor(
+    command: string,
+    reason: string,
+    kind: "approval" = "approval",
+    matched?: string,
+    approvalKey?: string,
+    grantModes?: ApprovalGrantModes,
+  ) {
     super(`command requires approval: ${command}`);
     this.name = "NeedsApproval";
     this.command = command;
@@ -126,6 +135,7 @@ export class NeedsApproval extends Error {
     this.kind = kind;
     this.matched = matched;
     this.approvalKey = approvalKey;
+    this.grantModes = grantModes;
   }
 }
 
@@ -434,7 +444,11 @@ export interface ToolContextDeps {
   ) => ReturnType<ToolContextDeps["commandPolicy"]>;
   provision: () => Promise<SandboxHandle>;
   provisionScratch?: () => Promise<SandboxHandle>;
-  provisionResource?: (id: string) => Promise<SandboxHandle>;
+  provisionResource?: (
+    input: string | SandboxAccessPlan,
+    authorize?: (access: SandboxAccessPlan) => void,
+  ) => Promise<SandboxHandle>;
+  accessSandboxResource?: (id: string) => Promise<SandboxAccessPlan>;
   provisionOwnerAuth?: () => Promise<SandboxHandle>;
   ownerAuthCommand?: (command: string, env?: Record<string, string>) => string;
   scopedCommand?: (command: string, env?: Record<string, string>) => string;
@@ -446,7 +460,7 @@ export interface ToolContextDeps {
   layers: WorkspaceLayer[];
   commandPolicy: () => CommandPolicy;
   layerCommandRules?: () => readonly CommandRule[];
-  authorizeCommand: (command: string, approvalKey?: string) => boolean;
+  authorizeCommand: (command: string, approvalKey?: string, exactApprovalKey?: boolean) => boolean;
   grantedHandles: GrantedHandle[];
   context?: TurnContext;
   sharedMaterializeDir?: string;
@@ -505,6 +519,49 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   const persistExclude = deps.persistWritesToStore?.excludeDirs;
   const orgScopeId = deps.layers.find((l) => l.mountPath === "global")?.scopeId ?? null;
 
+  const accessSandbox = async (id: string): Promise<SandboxAccessPlan> => {
+    if (!deps.sandboxResources || !deps.accessSandboxResource) throw new Error("sandbox inventory unavailable");
+    return deps.accessSandboxResource(id);
+  };
+
+  const authorizeExecution = (command: string, access?: SandboxAccessPlan, policy = deps.commandPolicy()): void => {
+    const source = evaluateCommandWithLayer(command, policy, deps.layerCommandRules?.() ?? []);
+    if (source.decision === "deny") throw new CommandDenied(command, source.reason ?? "denied by policy");
+    if (!access?.crossScope) {
+      if (source.decision === "require_approval" && !deps.authorizeCommand(command, source.approvalKey))
+        throw new NeedsApproval(
+          command,
+          source.reason ?? "requires approval",
+          "approval",
+          source.matched,
+          source.approvalKey,
+        );
+      return;
+    }
+    const target = access.commandPolicy
+      ? evaluateCommandWithLayer(command, access.commandPolicy, [])
+      : { decision: "allow" as const };
+    if (target.decision === "deny")
+      throw new CommandDenied(command, target.reason ?? "denied by target sandbox policy");
+    if (source.decision !== "require_approval" && target.decision !== "require_approval") return;
+    const approvalKey = `sandbox:${JSON.stringify([
+      access.resource.ownerScopeId,
+      source.approvalKey ?? command,
+      target.approvalKey ?? command,
+    ])}`;
+    const required = target.decision === "require_approval" ? target : source;
+    const grantModes = { session: false, always: false };
+    if (!deps.authorizeCommand(command, approvalKey, true))
+      throw new NeedsApproval(
+        command,
+        required.reason ?? "requires sandbox approval",
+        "approval",
+        required.matched,
+        approvalKey,
+        grantModes,
+      );
+  };
+
   const ledger = deps.ledger ?? createNullLedger();
   const runId = deps.runId;
   const attempt = deps.attempt ?? 1;
@@ -557,7 +614,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     ...(deps.commandCredentials?.length
       ? { commandCredentialHandles: deps.commandCredentials.map((credential) => credential.handle) }
       : {}),
-    ...(deps.sandboxResources
+    ...(deps.sandboxResources && deps.accessSandboxResource
       ? {
           async sandboxResources(
             action: "list" | "create" | "default" | "retire",
@@ -569,15 +626,22 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
               const listed = await resources.list(deps.createdBy, writableScopeId);
               return {
                 ...listed,
-                sandboxes: listed.sandboxes.filter((record) => record.ownerScopeId === writableScopeId),
+                sandboxes: (
+                  await Promise.all(
+                    listed.sandboxes.map(async (record) =>
+                      deps.accessSandboxResource!(record.id)
+                        .then((access) => access.resource)
+                        .catch(() => null),
+                    ),
+                  )
+                ).filter((record) => record !== null),
               };
             }
             if (action === "retire") {
               if (!input?.sandboxId) throw new Error("retire requires sandbox_id");
-              const record = await resources.access(deps.createdBy, input.sandboxId);
-              if (record.ownerScopeId !== writableScopeId) throw new Error("retire this sandbox from its owning scope");
-              await resources.retire(deps.createdBy, record.id);
-              return { retired: record.id };
+              const { resource } = await accessSandbox(input.sandboxId);
+              await resources.retire(deps.createdBy, resource.id);
+              return { retired: resource.id };
             }
             if (action === "default") {
               if (input?.sandboxId === undefined) throw new Error("default requires sandbox_id or null");
@@ -596,8 +660,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (sandboxId) {
         const resources = deps.sandboxResources;
         if (!resources) throw new Error("sandbox inventory unavailable");
-        const record = await resources.access(deps.createdBy, sandboxId);
-        if (record.ownerScopeId !== writableScopeId) throw new Error("inspect this sandbox from its owning scope");
+        await accessSandbox(sandboxId);
         return resources.status(deps.createdBy, sandboxId);
       }
       if (!deps.sandbox.computerStatus) {
@@ -618,8 +681,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (sandboxId) {
         const resources = deps.sandboxResources;
         if (!resources) throw new Error("sandbox inventory unavailable");
-        const record = await resources.access(deps.createdBy, sandboxId);
-        if (record.ownerScopeId !== writableScopeId) throw new Error("restart this sandbox from its owning scope");
+        await accessSandbox(sandboxId);
         return resources.restart(deps.createdBy, sandboxId);
       }
       if (!deps.sandbox.restartComputer) {
@@ -738,28 +800,24 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           if (target.kind === "error") throw new Error(target.message);
           reached = { scopeId: target.scopeId, label: `#${target.channelName}` };
         }
-        const { decision, reason, matched, approvalKey } = evaluateCommandWithLayer(
-          command,
-          deps.commandPolicyForCredentials?.(requestedCredentials, ownerAuth) ?? deps.commandPolicy(),
-          deps.layerCommandRules?.() ?? [],
-        );
-        if (decision === "deny") {
-          throw new CommandDenied(command, reason ?? "denied by policy");
-        }
-        if (decision === "require_approval" && !deps.authorizeCommand(command, approvalKey)) {
-          throw new NeedsApproval(command, reason ?? "requires approval", "approval", matched, approvalKey);
-        }
+        const executionPolicy = () =>
+          deps.commandPolicyForCredentials?.(requestedCredentials, ownerAuth) ?? deps.commandPolicy();
         let handle;
         if (execOpts?.sandboxId) {
           if (!deps.sandboxResources || !deps.provisionResource) throw new Error("sandbox inventory unavailable");
-          const resource = await deps.sandboxResources.access(deps.createdBy, execOpts.sandboxId);
-          if (resource.ownerScopeId !== writableScopeId)
-            throw new Error("execute on this sandbox from its owning scope to preserve conversation isolation");
-          handle = await deps.provisionResource(execOpts.sandboxId);
-        } else if (reached) handle = await deps.reach!.provisionFor(reached.scopeId);
-        else if (scratch) handle = await deps.provisionScratch!();
-        else if (ownerAuth) handle = await deps.provisionOwnerAuth!();
-        else handle = await deps.provision();
+          const access = await accessSandbox(execOpts.sandboxId);
+          handle = await deps.provisionResource(access, (current) => {
+            if (current.crossScope && requestedCredentials.length)
+              throw new Error("command credentials cannot be copied to another scope's computer");
+            authorizeExecution(command, current, executionPolicy());
+          });
+        } else {
+          authorizeExecution(command, undefined, executionPolicy());
+          if (reached) handle = await deps.reach!.provisionFor(reached.scopeId);
+          else if (scratch) handle = await deps.provisionScratch!();
+          else if (ownerAuth) handle = await deps.provisionOwnerAuth!();
+          else handle = await deps.provision();
+        }
         const resolvedMs = execOpts?.timeoutSeconds != null ? execOpts.timeoutSeconds * 1000 : deps.execTimeoutMs;
         const timeoutMs =
           resolvedMs != null && deps.execTimeoutCeilingMs != null
@@ -813,7 +871,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           for (const credential of singleUse) await credential.commit?.();
           const sandboxCommand = ownerAuth
             ? (deps.ownerAuthCommand?.(command, commandEnv) ?? command)
-            : (deps.scopedCommand?.(command, commandEnv) ?? command);
+            : (deps.scopedCommand?.(command, { ...handle.env, ...commandEnv }) ?? command);
           const commandHandle = Object.keys(commandEnv).length
             ? { ...handle, env: { ...handle.env, ...commandEnv } }
             : handle;
@@ -909,13 +967,8 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     ): Promise<SkillResult> {
       opts?.signal?.throwIfAborted();
       if (!deps.useSkill) return { content: null, sourceScopeId: null };
-      if (opts?.sandboxId) {
-        if (!deps.sandboxResources || !deps.provisionResource)
-          throw new Error("named sandboxes are not available here");
-        const record = await deps.sandboxResources.get(opts.sandboxId);
-        if (!record) throw new Error(`unknown sandbox ${opts.sandboxId}`);
-        if (record.ownerScopeId !== writableScopeId) throw new Error("load skills from the sandbox's owning scope");
-      }
+      if (opts?.sandboxId && (!deps.sandboxResources || !deps.provisionResource))
+        throw new Error("named sandboxes are not available here");
       return withAbort(() => deps.useSkill!(name, opts?.path ?? "SKILL.md", opts?.sandboxId), opts?.signal);
     },
 
@@ -1189,24 +1242,17 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       let handle: SandboxHandle;
       if (opts?.sandboxId) {
         if (!deps.sandboxResources || !deps.provisionResource) throw new Error("sandbox inventory unavailable");
-        const record = await deps.sandboxResources.access(deps.createdBy, opts.sandboxId);
-        if (record.ownerScopeId !== writableScopeId) throw new Error("start work from the sandbox's owning scope");
-        handle = await deps.provisionResource(opts.sandboxId);
-      } else handle = await deps.provision();
-      const { decision, reason, matched, approvalKey } = evaluateCommandWithLayer(
-        command,
-        deps.commandPolicy(),
-        deps.layerCommandRules?.() ?? [],
-      );
-      if (decision === "deny") throw new CommandDenied(command, reason ?? "denied by policy");
-      if (decision === "require_approval" && !deps.authorizeCommand(command, approvalKey)) {
-        throw new NeedsApproval(command, reason ?? "requires approval", "approval", matched, approvalKey);
+        const access = await accessSandbox(opts.sandboxId);
+        handle = await deps.provisionResource(access, (current) => authorizeExecution(command, current));
+      } else {
+        authorizeExecution(command);
+        handle = await deps.provision();
       }
       return once(
         () =>
           deps.backgroundBroker!.start(
             handle,
-            deps.scopedCommand?.(command) ?? command,
+            deps.scopedCommand?.(command, handle.env) ?? command,
             opts?.ttlSeconds ? opts.ttlSeconds * 1000 : undefined,
           ),
         () => true,
