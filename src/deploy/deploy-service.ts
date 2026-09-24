@@ -1,3 +1,5 @@
+import { notifyDeploymentShared } from "./share-notice.ts";
+import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import { EMBED_ANCESTORS_HINT, parseEmbedAncestors } from "./embed-ancestors.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, dirname, resolve, relative, isAbsolute } from "node:path";
@@ -112,6 +114,9 @@ export interface DeploymentGrantee {
 }
 
 export interface DeployServiceDeps {
+  deliveries?: DeliveryStore;
+  deployAppsDomain?: string;
+  publicWebUrl?: string;
   deployStore: DeployStore;
   provider: DeployProvider;
   deployDir: string;
@@ -281,6 +286,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     d: Deployment,
     da: NonNullable<DeployOrUpdateInput["defaultAudience"]>,
     isCreate: boolean,
+    explicitShares?: DeployOrUpdateInput["share"],
   ): Promise<void> {
     if (!isCreate && !da.force && d.createdInScope && da.contextScopeId !== d.createdInScope) return;
     const ref = deploymentRef(d.id);
@@ -311,6 +317,8 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         permission: "read",
         grantedBy: owner,
       });
+      if (!explicitShares?.some((s) => s.scope === grantee))
+        await notifyDeploymentShared(deps, d, grantee, "read", owner);
       deps.auditLog.record({
         at: Date.now(),
         principalId: owner,
@@ -340,6 +348,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         grantedBy: createdBy,
       };
       await deps.acl.grant(grant);
+      await notifyDeploymentShared(deps, d, grant.granteeScopeId, grant.permission, createdBy);
       deps.auditLog.record({
         at: Date.now(),
         principalId: createdBy,
@@ -693,7 +702,12 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
             ...(input.stampEnv ? { stampEnv: input.stampEnv } : {}),
           });
           if (input.defaultAudience)
-            await reconcileDefaultAudience((await deps.deployStore.get(existing.id))!, input.defaultAudience, false);
+            await reconcileDefaultAudience(
+              (await deps.deployStore.get(existing.id))!,
+              input.defaultAudience,
+              false,
+              input.share,
+            );
         } else if (input.alwaysOn !== undefined) await this.setDeploymentAlwaysOn(existing.id, input.alwaysOn);
         if (input.embedAncestors !== undefined)
           await this.setDeploymentEmbedAncestors(existing.id, input.embedAncestors);
@@ -756,7 +770,12 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         isCreate = true;
       }
       if (input.defaultAudience)
-        await reconcileDefaultAudience((await deps.deployStore.get(d.id))!, input.defaultAudience, isCreate);
+        await reconcileDefaultAudience(
+          (await deps.deployStore.get(d.id))!,
+          input.defaultAudience,
+          isCreate,
+          input.share,
+        );
       if (input.embedAncestors !== undefined) await this.setDeploymentEmbedAncestors(d.id, input.embedAncestors);
       if (input.share?.length) await issueShares((await deps.deployStore.get(d.id))!, createdBy, input.share);
       return (await deps.deployStore.get(d.id))!;
@@ -806,6 +825,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           scopeLabel: grantee,
         });
       }
+      await notifyDeploymentShared(deps, d, grantee, permission, actor.createdBy);
       return (await grantsOn(d)).map((g) => ({ scope: g.granteeScopeId, permission: g.permission }));
     },
 

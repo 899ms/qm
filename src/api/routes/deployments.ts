@@ -926,7 +926,10 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
     const day = Math.floor(Date.now() / 86_400_000);
     try {
       await app.enqueueDelivery({
-        destination: principalDestination(ownerId, sub),
+        destination: {
+          ...principalDestination(ownerId, sub),
+          deploymentAccess: { deploymentId: d.id, requesterId: sub },
+        },
         text:
           `${sub} is asking for access to your app "${label}" (https://${rawHost}/). ` +
           `They signed in but the app isn't shared with them. To grant it, share the deployment with personal:${sub}.`,
