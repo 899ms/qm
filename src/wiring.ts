@@ -1439,6 +1439,7 @@ export function buildApp(
       fallback,
       input.runtime,
       hydrateModelCatalog,
+      input.runtimePurpose,
     );
   });
 
@@ -1851,11 +1852,20 @@ export function buildApp(
     prepareRequest: prepareSessionRequest,
     authorize: (session, actorId) => canWriteScope(actorId, session.scopeId),
     async validateRuntime(input, scope) {
-      await resolveRuntimeChoiceDurable(configStore, runtimeOrgScope, scope, fallback, {
-        ...(input.harness ? { harnessId: input.harness as HarnessId } : {}),
-        ...(input.model ? { modelId: input.model } : {}),
-        ...(input.thinkingLevel ? { effortLevel: input.thinkingLevel } : {}),
-      });
+      await resolveRuntimeChoiceDurable(
+        configStore,
+        runtimeOrgScope,
+        scope,
+        fallback,
+        {
+          ...(input.harness ? { harnessId: input.harness as HarnessId } : {}),
+          ...(input.model ? { modelId: input.model } : {}),
+          ...(input.thinkingLevel ? { effortLevel: input.thinkingLevel } : {}),
+          ...(typeof input.fastMode === "boolean" ? { fastMode: input.fastMode } : {}),
+        },
+        hydrateModelCatalog,
+        "subagent",
+      );
     },
   });
   const orchestratorDeps: OrchestratorDeps = {
@@ -2411,7 +2421,7 @@ export function buildApp(
   );
   cronChanged.notify = (id) => scheduler.notifyChanged(id);
   orchestratorDeps.control = createControlService(app, scheduler, admin);
-  orchestratorDeps.validateScheduledRuntime = (scope, choice) =>
+  orchestratorDeps.validateScheduledRuntime = (scope, choice, purpose) =>
     availableRuntimeError(
       {
         deps: {
@@ -2426,6 +2436,7 @@ export function buildApp(
       },
       scope,
       choice,
+      purpose,
     );
   orchestratorDeps.runtime = createRuntimeService(
     {
