@@ -1,5 +1,11 @@
 import { appEditSlug } from "./app-edit";
-import { getRuntimeConfig, loadRuntimeConfig, saveRuntimeConfig, subscribeRuntimeConfig } from "./runtime-config-store";
+import {
+  runtimeConfigKey,
+  getRuntimeConfig,
+  loadRuntimeConfig,
+  saveRuntimeConfig,
+  subscribeRuntimeConfig,
+} from "./runtime-config-store";
 import type { Agent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { createFileDragState } from "./file-drag";
 import type { Attachment } from "@earendil-works/pi-web-ui";
@@ -173,7 +179,24 @@ export function resyncModelSelection(): void {
   }
 }
 
-export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
+export interface ComposerSubmission {
+  model: string;
+  harness: string;
+  thinkingLevel?: string;
+  fastMode?: boolean;
+  attachments?: CoreAttachment[];
+}
+
+export interface ComposerOptions {
+  prepareSubmit?: () => (text: string, options: ComposerSubmission) => Promise<void>;
+  placeholder?: string;
+  preferenceKey?: string;
+  runtimeAccount?: "company";
+}
+
+export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {}): ComposerSurface {
+  let submitting = false;
+  const loadoutKey = options.preferenceKey ? `web-ui:loadout:${options.preferenceKey}` : undefined;
   const refreshAccount = () => {
     loadoutRestored = false;
     void refreshRuntimeSelection(ctx.chat.state.scopeId, ctx.chat.state.agent ?? undefined, true);
@@ -192,6 +215,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   function isUnsentNewChat(): boolean {
     return (
+      !options.prepareSubmit &&
       ctx.chat.state.sessionId === null &&
       !(ctx.chat.state.agent?.state.messages ?? []).some((m) => !(m as { opener?: boolean }).opener)
     );
@@ -205,7 +229,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   function clearActiveDraft(): void {
     if (ctx.chat.state.threadRef) clearDraft(ctx.chat.state.threadRef);
-    if (ctx.chat.state.sessionId === null) clearDraft(newChatDraftKey(appState.me?.user));
+    if (!options.prepareSubmit && ctx.chat.state.sessionId === null) clearDraft(newChatDraftKey(appState.me?.user));
   }
 
   const composerState = {
@@ -294,7 +318,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   }
 
   function scopeKey(): string | null {
-    return runtimeScopeKey(ctx.chat.state.scopeId);
+    return runtimeConfigKey(runtimeScopeKey(ctx.chat.state.scopeId), options.runtimeAccount);
   }
 
   function currentModelOption(): ModelOption | undefined {
@@ -304,7 +328,8 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   async function refreshRuntimeSelection(scopeId: string | null, agent?: Agent, refresh = false): Promise<void> {
     const request = ++runtimeRequest;
-    const key = runtimeScopeKey(scopeId);
+    const actualScope = runtimeScopeKey(scopeId);
+    const key = runtimeConfigKey(actualScope, options.runtimeAccount);
     const identity = `${key}:${ctx.chat.state.threadRef}`;
     const changedIdentity = identity !== runtimeIdentity;
     if (changedIdentity) {
@@ -334,7 +359,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
           });
     composerState.error = "";
     syncRuntimeSelection(agent);
-    const config = key === null ? null : await loadRuntimeConfig(key, refresh);
+    const config = actualScope === null ? null : await loadRuntimeConfig(actualScope, refresh, options.runtimeAccount);
     if (request !== runtimeRequest) return;
     if (!config) composerState.error = "Could not load runtime settings.";
     if (config && !loadoutRestored) {
@@ -345,7 +370,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   }
 
   function restoreLoadoutSelection(): void {
-    loadout = loadLoadout();
+    loadout = loadLoadout(loadoutKey);
     let selected = currentModelOption();
     const threadRef = ctx.chat.state.threadRef;
     if (selected && threadRef && !threadModelPicks.has(threadRef)) {
@@ -388,6 +413,10 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     agent: Agent,
     preserveSelection = false,
   ): Promise<void> {
+    if (options.prepareSubmit) {
+      if (change.harnessId && change.modelId) selectModel(`${change.harnessId}:${change.modelId}`, agent);
+      return;
+    }
     const request = ++runtimeRequest;
     const scopeId = scopeKey();
     if (!scopeId) return;
@@ -468,7 +497,9 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     const runtimePending = activeRuntimeConfig === null;
     const inputBlocked = runtimePending || ctx.chat.state.resolvingApprovals.size > 0 || blockingPauses.length > 0;
     const attachingDisabled = inputBlocked;
-    let placeholder = appEditSlug(ctx.chat.state.threadRef, appState.me?.user) ? "Describe a change…" : "Ask anything";
+    let placeholder =
+      options.placeholder ??
+      (appEditSlug(ctx.chat.state.threadRef, appState.me?.user) ? "Describe a change…" : "Ask anything");
     if (inputBlocked) placeholder = runtimePending ? "Loading runtime…" : "Approve or deny to continue";
     else if (agent.state.isStreaming) placeholder = "Queue a message for after this turn…";
     let composerNotice: TemplateResult | typeof nothing = nothing;
@@ -497,7 +528,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
       >
         ${header} ${slashMenu(agent)}
         ${
-          activeRuntimeConfig?.upgradeAvailable
+          !options.prepareSubmit && activeRuntimeConfig?.upgradeAvailable
             ? html`<div class="runtime-upgrade">
                 <span
                   >The org now recommends
@@ -913,7 +944,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     </div>`;
   }
 
-  let loadout = loadLoadout();
+  let loadout = loadLoadout(loadoutKey);
   const modelPicker = createModelPicker<Agent>({
     host: () => ctx.chat.state.host,
     redraw: () => ctx.chat.drawActiveChat(),
@@ -923,7 +954,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     activeEntry: activeLoadoutEntry,
     saveEntries: (entries) => {
       loadout = entries;
-      saveLoadout(entries);
+      saveLoadout(entries, loadoutKey);
     },
     apply: applyLoadout,
     add: addLoadoutEntry,
@@ -932,6 +963,8 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     toggleFastMode,
     effectiveFastMode,
     changeDefault: changeScopeRuntime,
+    showDefaultAction: !options.prepareSubmit,
+    showInheritAction: !options.prepareSubmit,
   });
   const placeLoadout = modelPicker.place;
 
@@ -959,7 +992,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
   }
 
   function seededLoadout(selected: ModelOption): LoadoutEntry[] {
-    const latest = loadLoadout();
+    const latest = loadLoadout(loadoutKey);
     if (latest.length) loadout = latest;
     const active = activeLoadoutEntry(selected);
     if (!loadout.length) {
@@ -976,7 +1009,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   function rememberActiveTweaks(selected: ModelOption): void {
     loadout = upsertLoadout(seededLoadout(selected), activeLoadoutEntry(selected));
-    saveLoadout(loadout);
+    saveLoadout(loadout, loadoutKey);
   }
 
   function applyLoadout(entry: LoadoutEntry, agent: Agent): void {
@@ -990,7 +1023,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     composerState.effortLevel = normalized.effort;
     composerState.fastMode = normalized.fast;
     loadout = upsertLoadout(loadout, activeLoadoutEntry(option));
-    saveLoadout(loadout);
+    saveLoadout(loadout, loadoutKey);
     modelPicker.resetSection();
     composerState.openMenu = wasOpen ? "loadout" : null;
     ctx.chat.drawActiveChat(agent);
@@ -1177,6 +1210,7 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     return (
       Boolean(composerState.draft.trim() || composerState.attachments.length) &&
       !composerState.processingFiles &&
+      !submitting &&
       getRuntimeConfig(scopeKey()) !== null &&
       ctx.chat.state.resolvingApprovals.size === 0 &&
       !ctx.chat.hasUnresolvedApproval()
@@ -1418,6 +1452,36 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
     if (composerState.pasteView) closePasteView(agent);
     if (agent.state.isStreaming) return queueDraft(agent);
     const text = composerState.draft.trim();
+    if (!text && composerState.attachments.length === 0) return;
+    const submit = options.prepareSubmit?.();
+    if (submit) {
+      const selected = currentModelOption()!;
+      const attachments = [...composerState.attachments];
+      const selection: ComposerSubmission = {
+        model: selected.model.id,
+        harness: selected.harnessId,
+        thinkingLevel: composerState.effortLevel,
+        ...(harnessSupportsFastMode(selected.harnessId)
+          ? { fastMode: modelSupportsFastMode(scopeKey(), selected.model.id) && effectiveFastMode() }
+          : {}),
+      };
+      submitting = true;
+      clearActiveDraft();
+      resetComposer();
+      ctx.chat.drawActiveChat(agent);
+      try {
+        const { uploaded, skipped } = await uploadAttachments(attachments);
+        if (skipped.length) throw new Error(skipped.map((file) => file.note).join(" "));
+        await submit(text, { ...selection, ...(uploaded.length ? { attachments: uploaded } : {}) });
+      } catch (error) {
+        restoreStagedOnFailure(text, attachments, errMessage(error, "Could not send message."));
+        persistDraft();
+      } finally {
+        submitting = false;
+        ctx.chat.drawActiveChat(agent);
+      }
+      return;
+    }
     if (ctx.chat.state.threadRef) {
       bumpSessionActivity(ctx.chat.state.threadRef);
       ctx.chat.state.pendingSend = ctx.chat.state.threadRef;
@@ -1850,6 +1914,13 @@ export function createComposerSurface(ctx: ConvCtx): ComposerSurface {
 
   return {
     state: composerState,
+    submit: async (instruction = "") => {
+      if (submitting || !getRuntimeConfig(scopeKey())) return;
+      const agent = ctx.chat.state.agent;
+      if (!agent) return;
+      if (instruction) composerState.draft = [composerState.draft.trim(), instruction].filter(Boolean).join("\n\n");
+      await sendPrompt(agent);
+    },
     restageAttachments,
     composerForm,
     composerApprovalPanel,
