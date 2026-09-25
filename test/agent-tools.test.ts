@@ -2968,7 +2968,7 @@ test("sandbox strict approvals remain action-scoped across resource activation",
 });
 
 for (const outcome of ["unscreened", "quarantine"] as const)
-  test(`sandbox command failure preserves safe transcript metadata when output is ${outcome}`, async () => {
+  test(`sandbox nonzero exit preserves safe transcript metadata when output is ${outcome}`, async () => {
     const entries: Emitted[] = [];
     const tool = createAgentTools(
       {
@@ -2988,7 +2988,7 @@ for (const outcome of ["unscreened", "quarantine"] as const)
     const input = entries.find((e) => e.type === "tool_call")!.payload;
     const output = entries.find((e) => e.type === "tool_result")!.payload;
     assert.equal(input.sandbox_id, "box-a");
-    assert.equal(output.isError, true);
+    assert.equal(output.isError, outcome === "quarantine");
     assert.equal(output.stdout, undefined);
     assert.equal(output.stderr, undefined);
     if (outcome === "unscreened") {
@@ -3793,4 +3793,90 @@ for (const cancel of [false, true]) {
 
 test("context recovery is not available in read-only mode", () => {
   assert.ok(!createAgentTools({ current: fakeToolContext() }, { readOnly: true }).some((t) => t.name === "context"));
+});
+
+test("command exit codes are data; timeouts and thrown tool errors are failures", async () => {
+  for (const sandboxResources of [false, true]) {
+    for (const outcome of ["zero", "nonzero", "timeout", "provider", "denied"] as const) {
+      const entries: Emitted[] = [];
+      const tool = createAgentTools(
+        {
+          current: {
+            ...fakeToolContext(),
+            execute: async () => {
+              if (outcome === "provider") throw new Error("sandbox provider unavailable");
+              if (outcome === "denied") throw new CommandDenied("[ -d dir ]", "policy denied");
+              return { stdout: "", stderr: "", code: outcome === "zero" ? 0 : 1, timedOut: outcome === "timeout" };
+            },
+          },
+          scopeLabel: "personal:U1",
+          emit: (entry) => {
+            entries.push(entry as Emitted);
+          },
+        },
+        { sandboxResources },
+      ).find((t) => t.name === (sandboxResources ? "sandbox" : "execute"))!;
+      const run = () =>
+        call(tool, {
+          ...(sandboxResources ? { action: "exec" } : {}),
+          command: "[ -d dir ]",
+          purpose: "Check directory",
+        });
+      if (outcome === "provider") {
+        await assert.rejects(run, /sandbox provider unavailable/);
+        const result = entries.find((e) => e.type === "tool_result")!.payload;
+        assert.equal(result.isError, true);
+        assert.equal(result.result, "Command execution failed.");
+        assert.equal(result.code, undefined);
+        continue;
+      }
+      const returned = await run();
+      const result = entries.find((e) => e.type === "tool_result")!.payload;
+      assert.equal(result.isError, !["zero", "nonzero"].includes(outcome), outcome);
+      if (outcome === "nonzero") {
+        assert.equal(result.code, 1);
+        assert.match(textOut(returned), /\[exit 1\]/);
+      }
+    }
+  }
+});
+
+test("thrown execution errors leave pending child messages for the next delivered result", async () => {
+  for (const sandboxResources of [false, true]) {
+    let pending = true;
+    const context = fakeToolContext();
+    context.execute = async () => {
+      throw new Error("provider unavailable");
+    };
+    context.sessionSyscalls = {
+      open: async () => ({ ok: false, message: "unused" }),
+      write: async () => ({ ok: false, message: "unused" }),
+      read: async () => ({ ok: false, message: "unused" }),
+      receive: async () =>
+        pending
+          ? [
+              {
+                id: "mail",
+                senderId: "child",
+                recipientId: "parent",
+                actor: { id: "U1", type: "internal" as const },
+                audience: [],
+                text: "Important child finding",
+                createdAt: 1,
+              },
+            ]
+          : [],
+      acknowledge: async () => {
+        pending = false;
+      },
+    };
+    const tools = createAgentTools({ current: context }, { sandboxResources });
+    const tool = tools.find((t) => t.name === (sandboxResources ? "sandbox" : "execute"))!;
+    const input = { ...(sandboxResources ? { action: "exec" } : {}), command: "true", purpose: "Check provider" };
+    await assert.rejects(() => call(tool, input), /provider unavailable/);
+    assert.equal(pending, true);
+    context.execute = async () => ({ stdout: "ok", stderr: "", code: 0, timedOut: false });
+    assert.match(JSON.stringify(await call(tool, input)), /Important child finding/);
+    assert.equal(pending, false);
+  }
 });
